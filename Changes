@@ -1,0 +1,6 @@
+Revision history for Perl extension Win32::WindowsUpdate.
+
+0.01  Tue Feb 17 16:43:41 2009
+	- original version; created by h2xs 1.23 with options
+		-XAn Win32::WindowsUpdate
+
