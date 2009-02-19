@@ -3,8 +3,9 @@ package Win32::WindowsUpdate;
 use strict;
 use warnings;
 use Win32::OLE qw(in);
+use Win32::TieRegistry (Delimiter => '/');
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 =head1 NAME
 
@@ -12,13 +13,16 @@ Win32::WindowsUpdate - Access to Windows Update functions
 
 =head1 DESCRIPTION
 
-Currently only provides the ability to see installed and available not installed Windows Updates.
+Provides the ability to see installed and available (not installed) Windows Updates as well as install them.
+It provides other features, such as the ability to disable/enable automatic reboot of the computer when users are logged on.
+Read the list of methods below to see the available features.
 
-The intention is to provide the ability to manage all features related to Windows Updates, including downloading,
-installing, uninstalling (maybe), and configuring Windows Updates.
+If a feature is missing, request it!
+File a "wishlist" bug on the CPAN bug tracker or shoot me an email (C<dusty#megagram#com>).
 
-If you test this, please let me know your results.  It's not ready for production use, but any testing is
-greatly appreciated.
+If you test this, please let me know your results.
+It's not ready for production use, but any testing is greatly appreciated.
+It should work, but I haven't tested on enough systems to promise this.
 
 =head1 EXAMPLE
 
@@ -26,6 +30,8 @@ greatly appreciated.
   my $wu = Win32::WindowsUpdate->new;
 
   die "Reboot first...\n" if $wu->rebootRequired;
+
+  $wu->setAutoRebootWhileLoggedOn(0); # don't auto reboot
 
   my @updates;
   foreach my $update ($wu->updates)
@@ -272,6 +278,106 @@ sub installerBusy
   return ($installer->IsBusy ? 1 : 0);
 }
 
+=head2 setAutomaticUpdates
+
+Set the Automatic Updates setting.
+
+=over
+
+=item disable (or C<1>)
+
+Disable Automatic Updates altogether.
+Any updates will need to performed manually (using this module, via Windows Updates, or your other methods)
+
+=item notifyonly (or C<2>)
+
+Notify of new updates, but don't download or install them.
+
+=item notifydownload (or C<3>)
+
+Download new updates automatically, but don't install them.
+The user will be notified that updates are pending and will have the ability to choose which updates to install.
+
+=item automatic (or C<4>)
+
+Download and install updates automatically.
+The user will only be notified that they need to reboot after updates are completed (if reboot is needed).
+Windows might automatically reboot itself after some period of time to "be helpful".
+
+=back
+
+=cut
+
+sub setAutomaticUpdates
+{
+  my $self = shift;
+  my $setting = lc(shift);
+  my $value = 0;
+
+  $value = 1 if ($setting eq 'disable' or $setting eq '1');
+  $value = 2 if ($setting eq 'notifyonly' or $setting eq '2');
+  $value = 3 if ($setting eq 'notifydownload' or $setting eq '3');
+  $value = 4 if ($setting eq 'automatic' or $setting eq '4');
+
+  return undef unless ($value >= 1 && $value <= 4);
+
+  my $state = ($value == 1 ? 7 : 2); # 7=audisabled, 2=detectionpending
+
+  my $key = $Registry->{'LMachine/Software/Microsoft/Windows/CurrentVersion/WindowsUpdate/Auto Update/'};
+  $key->{'/AUState'} = ['0x000'.$state, 'REG_DWORD'];
+  $key->{'/AUOptions'} = ['0x000'.$value, 'REG_DWORD'];
+
+  return $value;
+}
+
+=head2 setAutoRebootWhileLoggedOn
+
+  $wu->setAutoRebootWhileLoggedOn(1); # enable (auto reboot, Windows default behavior)
+  $wu->setAutoRebootWhileLoggedOn(0); # disable (no auto reboot)
+
+Enable or disable the automatic reboot "feature".
+If there is a pending reboot, it won't take effect until after the reboot.
+Will still nag for a reboot, but the reboot won't be automatic after a period of time.
+If the logged on user doesn't have reboot privilege, the nag will still appear, but it won't do anything except nag.
+Without this setting, Windows will reboot automatically after the nag screen has been ignored for five minutes...
+and for non-admins, they can't prevent the reboot.
+This option (if set to C<0>) will prevent this behavior.
+Defaults to C<0> if you don't specify a value.
+
+See also http://blogs.msdn.com/tim_rains/archive/2004/11/15/257877.aspx
+
+=cut
+
+sub setAutoRebootWhileLoggedOn
+{
+  my $self = shift;
+  my $setting = shift;
+  $setting = !!$setting; # yummy double-negative makes a tasty bool
+
+  my $key = $Registry->{'LMachine/Software/Policies/Microsoft/Windows/'};
+  $key = $key->CreateKey('Windows Update/');
+  $key = $key->CreateKey('AU/');
+  $key->{'/NoAutoRebootWithLoggedOnUsers'} = ['0x000'.(!$setting), 'REG_DWORD'];
+
+  return $setting;
+}
+
+=head2 setRebootNag (noop)
+
+NOOP.
+Incomplete as I find a reasonable way to do this, preferably without requiring a reboot.
+Needs to reliably support Win2k and newer, including Pro, Home, and Server versions.
+Ideas or patches?  Let me know.
+
+See also http://www.codinghorror.com/blog/archives/000294.html
+
+=cut
+
+sub setRebootNag
+{
+  my $self = shift;
+}
+
 =head1 TODO
 
 =over
@@ -286,18 +392,20 @@ sub installerBusy
 
 =item Provide ability to only download updates, not install them.
 
-=item Provide ability to change "Automatic Updates" settings.
+=item Provide ability to disable/enable "Please reboot..." nag messages after update install. (see C<setRebootNag> above)
 
-=item Provide ability to disable/enable "Please reboot..." nag messages after update install.
-
-=item Determine other necessary features. (email me with your requests)
+=item Determine other necessary features. (email me with your requests: C<dusty#megagram#com> or use the CPAN bug tracker)
 
 =back
 
-=head1 BUGS
+=head1 BUGS/WISHLIST
 
 B<REPORT BUGS!>
-Report any bugs to the CPAN bug tracker.
+Report any bugs to the CPAN bug tracker or email me C<dusty#megagram#com>.
+
+To wishlist something, use the CPAN bug tracker (set as wishlist) or email me.
+I'd be happy to implement useful functionality in this module on request.
+I'd also be happy to accept patches.
 
 =head1 COPYRIGHT/LICENSE
 
