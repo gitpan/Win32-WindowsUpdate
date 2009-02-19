@@ -1,6 +1,10 @@
 Revision history for Perl extension Win32::WindowsUpdate.
 
+0.02  Wed Feb 18 18:48:00 2009
+  - Added "install" (via VBScript, broken Perl version is commented out)
+  - Added "rebootRequired"
+  - Added "installerBusy"
+
 0.01  Tue Feb 17 16:43:41 2009
 	- original version; created by h2xs 1.23 with options
 		-XAn Win32::WindowsUpdate
-

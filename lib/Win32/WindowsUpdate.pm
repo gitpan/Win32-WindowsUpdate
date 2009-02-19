@@ -3,8 +3,9 @@ package Win32::WindowsUpdate;
 use strict;
 use warnings;
 use Win32::OLE qw(in);
+use Inline::WSC;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =head1 NAME
 
@@ -24,12 +25,20 @@ greatly appreciated.
 
   use Win32::WindowsUpdate;
   my $wu = Win32::WindowsUpdate->new;
-  my $updates = $wu->updates;
-  my $installed = $wu->installed;
 
-  use Win32::WindowsUpdate;
-  my $wu = Win32::WindowsUpdate->new({online => 0});
-  my $updates = $wu->updates;
+  die "Reboot first...\n" if $wu->rebootRequired;
+
+  my @updates;
+  foreach my $update ($wu->updates)
+  {
+    next unless ($update->{Title} =~ m/Security Update.*Windows XP/i); # filter for something
+    push(@updates, $update); # push it into the updates list
+  }
+
+  sleep 1 while ($wu->installerBusy); # if Windows Installer is busy
+  die "Reboot first...\n" if $wu->rebootRequired; # if whatever WI finished doing requires reboot
+  $wu->install(@updates); # install your selected updates
+  print "Installed updates want you to reboot...\n" if $wu->rebootRequired;
 
 =head1 METHODS
 
@@ -60,30 +69,10 @@ sub new
   $self->{online} = (defined($args->{online}) ? ($args->{online} ? 1 : 0) : 1); # online by default
   $self->{updateSession} = Win32::OLE->new('Microsoft.Update.Session') or die "ERROR creating Microsoft.Update.Session\n";
   $self->{updateSearcher} = $self->{updateSession}->CreateUpdateSearcher or die "ERROR creating CreateUpdateSearcher\n";
-  $self->{updateSearcher}->SetProperty('Online', $self->{online});
+  $self->{updateSearcher}->{Online} = $self->{online};
+  $self->{systemInfo} = Win32::OLE->new('Microsoft.Update.SystemInfo') or die "ERROR creating Microsoft.Update.SystemInfo\n";
 
   return bless($self, $class);
-}
-
-=head2 installed
-
-  my $installed = $wu->installed;
-  # .. or ..
-  my @installed = $wu->installed;
-
-Returns a list of installed updates.
-
-=cut
-
-sub installed
-{
-  my $self = shift;
-  my $args = shift;
-
-  return $self->updates({
-    IsInstalled => 1,
-    IsHidden => $args->{IsHidden},
-  });
 }
 
 =head2 updates
@@ -147,6 +136,180 @@ sub updates
   }
 
   return (wantarray ? @updates : \@updates);
+}
+
+=head2 installed
+
+  my $installed = $wu->installed;
+  # .. or ..
+  my @installed = $wu->installed;
+
+Returns a list of installed updates.
+
+=cut
+
+sub installed
+{
+  my $self = shift;
+  my $args = shift;
+
+  return $self->updates({
+    IsInstalled => 1,
+    IsHidden => $args->{IsHidden},
+  });
+}
+
+=head2 install
+
+  my @updates;
+  foreach my $update ($wu->updates)
+  {
+    printf("Available Update: %s %s\n", $update->{UpdateId}, $update->{Title});
+    next unless ($update->{Title} =~ m/Security Update.*Windows XP/i);
+    printf("Want to install: %s\n", $update->{Title});
+
+    push(@updates, $update->{UpdateId});
+    # .. or .. (both ways will work)
+    push(@updates, $update);
+  }
+
+  $wu->install(@updates);
+
+Install specified updates.
+Provide an array of either C<update> (directly from C<< $wu->updates >>) or C<updateId>.
+See example above for usage.
+
+Currently implemented via VBScript (via L<Inline::WSC>).
+Perl code exists in the module to do it without VBScript, but it doesn't work.
+If you would like to help, please check out the source of this module to see what's going on there.
+
+=cut
+
+sub install
+{
+  my $self = shift;
+
+  return undef unless scalar(@_); # no updates specified?  don't run.
+
+  # using vbscript makes me sad... (see commented broken perl code after this sub)
+  my $VBSCRIPT = <<VBSCRIPT;
+    Sub vbInstall()
+      Set vbSession = CreateObject("Microsoft.Update.Session")
+      Set vbSearcher = vbSession.CreateUpdateSearcher()
+      Set vbSysInfo = CreateObject("Microsoft.Update.SystemInfo")
+      Set vbUpdateColl = CreateObject("Microsoft.Update.UpdateColl")
+      Set vbSearchResult = vbSearcher.Search("IsInstalled = 0 AND IsHidden = 0")
+
+      For i = 0 To vbSearchResult.Updates.Count - 1
+        Set vbUpdate = vbSearchResult.Updates.Item(i)
+VBSCRIPT
+
+  # I'm sure there's a better way...
+  foreach (@_)
+  {
+    my $uid = (ref($_) eq 'HASH' ? uc($_->{UpdateId}) : uc($_));
+    warn("To install: $uid\n");
+    $VBSCRIPT .= <<VBMATCHCODE;
+        If UCase(vbUpdate.Identity.UpdateID) = "$uid" Then
+          vbUpdate.AcceptEula
+          vbUpdateColl.Add(vbUpdate)
+        End If
+VBMATCHCODE
+  }
+
+  $VBSCRIPT .= <<VBSCRIPT;
+      Next
+
+      Set vbDownloader = vbSession.CreateUpdateDownloader()
+      vbDownloader.Updates = vbUpdateColl
+      Set vbDownloadResult = vbDownloader.Download()
+
+      Set vbInstaller = vbSession.CreateUpdateInstaller()
+      vbInstaller.Updates = vbUpdateColl
+      Set vbInstallationResult = vbInstaller.Install()
+    End Sub
+VBSCRIPT
+
+  Inline::WSC->compile(VBScript => $VBSCRIPT);
+  vbInstall();
+}
+
+# the perl way, but it doesn't seem to work... let me know how to fix it if you figure it out.
+# if you fix it, include code that does accomplishes this: my $uid = (ref($_) eq 'HASH' ? uc($_->{UpdateId}) : uc($_));
+#sub install
+#{
+#  my $self = shift;
+#  my @updates = @_;
+#
+#  return undef unless scalar(@updates); # no updates specified?  don't run.
+#
+#  my $updatecoll = Win32::OLE->new('Microsoft.Update.UpdateColl') or die "ERROR creating Microsoft.Update.UpdateColl\n";
+#  $updatecoll->Clear;
+#
+#  my $queryResult = $self->{updateSearcher}->Search("IsInstalled = 0 AND IsHidden = 0") or die "ERROR in query\n";
+#  my $updates = $queryResult->Updates;
+#
+#  foreach my $update (in $updates)
+#  {
+#    my $updateID = $update->Identity->UpdateID;
+#    next unless grep(m/^$updateID$/i, @updates);
+#    $update->AcceptEula;
+#    $updatecoll->Add($update);
+#    printf("Adding %s %s to collection\n", $updateID, $update->Title);
+#  }
+#
+#  printf("Updates to install: %d\n", $updatecoll->Count);
+#
+#  my $downloader = $self->{updateSession}->CreateUpdateDownloader;
+#  $downloader->{Updates} = $updatecoll;
+#  my $downloadResult = $downloader->Download;
+#
+#  my $installer = $self->{updateSession}->CreateUpdateInstaller;
+#  $installer->{Updates} = $updatecoll; # <<<<<<<<<<<< problem is here... FIXME!
+#  $installer->{AllowSourcePrompts} = 0;
+#  $installer->{ForceQuiet} = 1;
+#  my $installResult = $installer->Install;
+#
+#  use Data::Dumper;
+#  print Dumper($updatecoll, $downloader, $downloadResult, $installer, $installResult);
+#}
+
+=head2 rebootRequired
+
+  my $needToReboot = $wu->rebootRequired();
+
+Returns bool.  True if reboot is required, false otherwise.
+
+You should check this before and after you run C<install>.
+If it's true before you install, you'll want to reboot before you install.
+If it's true after you install, you'll want to reboot sometime.
+
+=cut
+
+sub rebootRequired
+{
+  my $self = shift;
+  return ($self->{systemInfo}->RebootRequired ? 1 : 0);
+}
+
+=head2 installerBusy
+
+  my $installerIsBusy = $wu->installerBusy();
+
+Returns bool.  True if Windows Installer is busy, false otherwise.
+
+If the installer is busy, you probably won't have any success at running C<install>.
+You could just sit in a loop waiting for it to no longer be busy, but you'd want to check
+C<rebootRequired> immediately before you run C<install> to be sure you won't want to reboot
+first.
+
+=cut
+
+sub installerBusy
+{
+  my $self = shift;
+  my $installer = $self->{updateSession}->CreateUpdateInstaller;
+  return ($installer->IsBusy ? 1 : 0);
 }
 
 =head1 TODO
